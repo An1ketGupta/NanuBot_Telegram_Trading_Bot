@@ -1,5 +1,5 @@
-import { Connection, Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
-import { Bot } from "grammy";
+import { Connection, Keypair, LAMPORTS_PER_SOL, VersionedTransaction } from "@solana/web3.js";
+import { Bot, Context, session, type SessionFlavor } from "grammy";
 import { startKeyboard, tokenBuyKeyboard, zeroBalanceKeyboard } from "./keyboards";
 import axios from "axios";
 
@@ -16,19 +16,26 @@ if (!tokenAPI) {
     throw new Error("Token API must be included.")
 }
 
+interface SessionData {
+    step: "idle" | "waiting_for_amount"
+}
+type myContext = Context & SessionFlavor<SessionData>
+
 let currentToken: string = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-const bot = new Bot(tokenAPI)
+const bot = new Bot<myContext>(process.env.BOT_API_KEY!)
+bot.use(session({
+    initial: (): SessionData => ({ step: "idle" })
+}));
 
-// this is the start command action
 bot.command("start", async (ctx) => {
-
-    const userKeyPair = Keypair.generate();
     if (!ctx.from?.id) {
         throw new Error("No userid detected")
     }
     const userId: number = ctx.from?.id;
-    KeyPairData[userId] = userKeyPair;
-    console.log(KeyPairData)
+    if (!KeyPairData[userId]) {
+        KeyPairData[userId] = Keypair.generate();
+    }
+    const userKeyPair = KeyPairData[userId];
 
     await ctx.reply(`<b>Welcome to NanuBot</b><b>This is your Public Key (Wallet Address): <i>${userKeyPair.publicKey.toBase58()}</i></b>`,
         {
@@ -92,7 +99,7 @@ bot.callbackQuery("buyHandler", async (ctx) => {
     }
 })
 
-bot.callbackQuery("1SolHandler", async (ctx) => {
+bot.callbackQuery("0.1SolHandler", async (ctx) => {
     try {
         await ctx.answerCallbackQuery("Fetching details...");
         if (!ctx.from?.id) {
@@ -108,7 +115,7 @@ bot.callbackQuery("1SolHandler", async (ctx) => {
         const userBalance = await rpcConnection.getBalance(userPublicKey);
         const amountToSwap = 100000000;
         if (userBalance <= amountToSwap) {
-            return ctx.reply("Insufficient balance. You need 0.1 SOL + gas fees.");
+            return ctx.reply("Insufficient balance.");
         }
         const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
             params: {
@@ -142,9 +149,9 @@ bot.callbackQuery("1SolHandler", async (ctx) => {
         });
 
         if (confirmation.value.err) {
-            return ctx.reply(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+            return ctx.reply(`Transaction failed.`);
         } else {
-            return ctx.reply("✅ Swap successful!");
+            return ctx.reply("Swap successful!");
         }
 
     }
@@ -153,7 +160,7 @@ bot.callbackQuery("1SolHandler", async (ctx) => {
     }
 });
 
-bot.callbackQuery("5SolHandler", async (ctx) => {
+bot.callbackQuery("0.5SolHandler", async (ctx) => {
     try {
         await ctx.answerCallbackQuery("Fetching details...");
         if (!ctx.from?.id) {
@@ -169,7 +176,7 @@ bot.callbackQuery("5SolHandler", async (ctx) => {
         const userBalance = await rpcConnection.getBalance(userPublicKey);
         const amountToSwap = 500000000;
         if (userBalance <= amountToSwap) {
-            return ctx.reply("Insufficient balance. You need 0.1 SOL + gas fees.");
+            return ctx.reply("Insufficient balance.");
         }
         const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
             params: {
@@ -191,7 +198,6 @@ bot.callbackQuery("5SolHandler", async (ctx) => {
         const transaction = VersionedTransaction.deserialize(transactionBuffer);
         transaction.sign([userKeypair]);
         const rawTransaction = transaction.serialize();
-
         const txnSignature = await rpcConnection.sendRawTransaction(rawTransaction);
         ctx.reply(`Transaction sent! Waiting for confirmation... \n`);
         const latestBlockhash = await rpcConnection.getLatestBlockhash();
@@ -203,9 +209,9 @@ bot.callbackQuery("5SolHandler", async (ctx) => {
         });
 
         if (confirmation.value.err) {
-            return ctx.reply(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+            return ctx.reply(`Transaction failed.`);
         } else {
-            return ctx.reply("✅ Swap successful!");
+            return ctx.reply("Swap successful!");
         }
 
     }
@@ -214,7 +220,7 @@ bot.callbackQuery("5SolHandler", async (ctx) => {
     }
 });
 
-bot.callbackQuery("10SolHandler", async (ctx) => {
+bot.callbackQuery("1SolHandler", async (ctx) => {
     try {
         await ctx.answerCallbackQuery("Fetching details...");
         if (!ctx.from?.id) {
@@ -230,7 +236,7 @@ bot.callbackQuery("10SolHandler", async (ctx) => {
         const userBalance = await rpcConnection.getBalance(userPublicKey);
         const amountToSwap = 1000000000;
         if (userBalance <= amountToSwap) {
-            return ctx.reply("Insufficient balance. You need 0.1 SOL + gas fees.");
+            return ctx.reply("Insufficient balance.");
         }
         const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
             params: {
@@ -264,9 +270,9 @@ bot.callbackQuery("10SolHandler", async (ctx) => {
         });
 
         if (confirmation.value.err) {
-            return ctx.reply(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+            return ctx.reply(`Transaction failed.`);
         } else {
-            return ctx.reply("✅ Swap successful!");
+            return ctx.reply("Swap successful!");
         }
 
     }
@@ -274,5 +280,91 @@ bot.callbackQuery("10SolHandler", async (ctx) => {
         return ctx.reply(`An error occurred.`);
     }
 });
+
+bot.callbackQuery("xSolHandler", async (ctx) => {
+    if (!ctx.from.id) {
+        await ctx.reply("No user detected.")
+    }
+
+    const userId = ctx.from.id;
+    if (!KeyPairData[userId]) {
+        await ctx.reply("You do not have a account. Do /start first")
+    }
+    await ctx.answerCallbackQuery("Fetching details")
+    ctx.session.step = "waiting_for_amount"
+    await ctx.reply("Enter the amount of Sol you want to buy for -- ")
+})
+
+bot.on("message:text", async (ctx) => {
+    if (!ctx.from.id) {
+        await ctx.reply("No user detected.")
+    }
+
+    const userId = ctx.from.id;
+    if (!KeyPairData[userId]) {
+        await ctx.reply("You do not have a account. Do /start first")
+    }
+
+    if (ctx.session.step == "waiting_for_amount") {
+        const stringAmount = ctx.message.text.trim()
+        const isValidNumber = /^\d+(\.\d+)?$/.test(stringAmount);
+        const amount = parseFloat(stringAmount);
+        if (!isValidNumber || amount < 0) {
+            return ctx.reply("Enter a valid amount.")
+        }
+        else {
+            const amountToSwap = Math.round(amount * LAMPORTS_PER_SOL);
+            const userKeypair = KeyPairData[userId]!;
+            const userPublicKey = userKeypair.publicKey;
+            const userBalance = await rpcConnection.getBalance(userPublicKey);
+            if (userBalance <= amountToSwap) {
+                return ctx.reply("Insufficient balance.");
+            }
+            const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
+                params: {
+                    inputMint: "So11111111111111111111111111111111111111112",
+                    outputMint: currentToken,
+                    amount: amountToSwap.toString(),
+                    taker: userPublicKey.toBase58()
+                },
+                headers: {
+                    'x-api-key': process.env.JUPITER_API
+                }
+            });
+
+            const data = response.data;
+            if (!data.transaction) {
+                throw new Error("No transaction returned from Jupiter API");
+            }
+            const transactionBuffer = Buffer.from(data.transaction, 'base64');
+            const transaction = VersionedTransaction.deserialize(transactionBuffer);
+            transaction.sign([userKeypair]);
+            const rawTransaction = transaction.serialize();
+            const sendTransaction = Buffer.from(rawTransaction).toBase64();
+
+            const executeResponse = await axios.post('https://api.jup.ag/ultra/v1/execute', {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': 'JUPITER_API',
+                },
+                body: JSON.stringify({
+                    signedTransaction: sendTransaction,
+                    // @ts-ignore
+                    requestId: response.requestId,
+                }),
+            })
+
+            // @ts-ignore
+            const jsonResponse = await executeResponse.json();
+            if (jsonResponse.status === "Success") {
+                console.log('Swap successful:', JSON.stringify(jsonResponse, null, 2));
+                console.log(`https://solscan.io/tx/${jsonResponse.signature}`);
+            } else {
+                console.error('Swap failed:', JSON.stringify(jsonResponse, null, 2));
+                console.log(`https://solscan.io/tx/${jsonResponse.signature}`);
+            }
+        }
+    }
+})
 
 bot.start()

@@ -5,18 +5,17 @@
   "private": true,
   "devDependencies": {
     "@types/bun": "latest",
-    "prisma": "^7.2.0"
+    "prisma": "^5.22.0"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "@prisma/adapter-libsql": "^7.2.0",
-    "@prisma/client": "^7.2.0",
-    "@prisma/extension-accelerate": "^3.0.1",
+    "@prisma/client": "^5.22.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "axios": "^1.13.2",
+    "bs58": "^6.0.0",
     "grammy": "^1.39.3"
   }
 }

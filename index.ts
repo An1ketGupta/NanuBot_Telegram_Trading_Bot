@@ -1,28 +1,30 @@
-import { 
-    Connection, 
-    Keypair, 
-    LAMPORTS_PER_SOL, 
-    PublicKey, 
-    VersionedTransaction 
+import {
+    Connection,
+    Keypair,
+    LAMPORTS_PER_SOL,
+    PublicKey,
+    VersionedTransaction
 } from "@solana/web3.js";
-import { 
-    Bot, 
-    Context, 
-    InlineKeyboard, 
-    session, 
-    type SessionFlavor 
+import {
+    Bot,
+    Context,
+    InlineKeyboard,
+    session,
+    type SessionFlavor
 } from "grammy";
 import axios from "axios";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import * as dotenv from "dotenv";
 import { startKeyboard, tokenBuyKeyboard, tokenSellKeyboard } from "./keyboards";
-
-dotenv.config();
+import {
+    getOrCreateUser,
+    getUserKeypair,
+    updateCurrentToken,
+    getCurrentToken,
+    updateCurrentSellToken,
+    getCurrentSellToken
+} from "./db";
 
 const rpcConnection = new Connection(process.env.ARPC_URL!);
-const KeyPairData: Record<number, Keypair> = {};
-const currentUserToken: Record<number, string> = {};     // Token user is looking at to BUY
-const userCurrentSellToken: Record<number, string> = {}; // Token user selected to SELL
 
 interface SessionData {
     step: "idle" | "waiting_for_buy_amount" | "waiting_for_sell_amount";
@@ -76,19 +78,19 @@ async function SolBuyHandler(ctx: any, amountLamports: number) {
         if (!ctx.from?.id) return;
 
         const userId = ctx.from.id;
-        const userKeypair = KeyPairData[userId];
+        const userKeypair = await getUserKeypair(userId);
         if (!userKeypair) return ctx.reply("Wallet not found. /start first.");
 
         const userBalance = await rpcConnection.getBalance(userKeypair.publicKey);
         if (userBalance <= amountLamports) return ctx.reply("Insufficient SOL balance.");
 
-        const tokenToBuy = currentUserToken[userId];
+        const tokenToBuy = await getCurrentToken(userId);
         if (!tokenToBuy) return ctx.reply("No token selected.");
         await executeJupiterSwap(
-            ctx, 
-            userKeypair, 
-            "So11111111111111111111111111111111111111112", 
-            tokenToBuy, 
+            ctx,
+            userKeypair,
+            "So11111111111111111111111111111111111111112",
+            tokenToBuy,
             amountLamports.toString()
         );
     } catch (error: any) {
@@ -100,10 +102,10 @@ async function SellHandler(ctx: any, percentage: number) {
     try {
         await ctx.answerCallbackQuery("Processing Sell...");
         if (!ctx.from?.id) return;
-        
+
         const userId = ctx.from.id;
-        const userKeypair = KeyPairData[userId];
-        const tokenMintAddress = userCurrentSellToken[userId];
+        const userKeypair = await getUserKeypair(userId);
+        const tokenMintAddress = await getCurrentSellToken(userId);
 
         if (!userKeypair || !tokenMintAddress) return ctx.reply("Session error. Please restart.");
 
@@ -124,10 +126,10 @@ async function SellHandler(ctx: any, percentage: number) {
 
         await ctx.reply(`Selling ${percentage * 100}%...`);
         await executeJupiterSwap(
-            ctx, 
-            userKeypair, 
-            tokenMintAddress, 
-            "So11111111111111111111111111111111111111112", 
+            ctx,
+            userKeypair,
+            tokenMintAddress,
+            "So11111111111111111111111111111111111111112",
             amountToSell.toString()
         );
 
@@ -140,13 +142,10 @@ bot.command("start", async (ctx) => {
     if (!ctx.from?.id) return;
     const userId = ctx.from.id;
 
-    if (!KeyPairData[userId]) {
-        KeyPairData[userId] = Keypair.generate();
-    }
-    
-    const userKeyPair = KeyPairData[userId];
+    const { user, keypair } = await getOrCreateUser(userId);
+
     await ctx.reply(
-        `<b>Welcome to NanuBot</b>\n\nYour Wallet Address:\n<code>${userKeyPair.publicKey.toBase58()}</code>`,
+        `<b>Welcome to TradeAny_bot</b>\n\nYour Wallet Address:\n<code>${keypair.publicKey.toBase58()}</code>`,
         {
             parse_mode: "HTML",
             reply_markup: startKeyboard
@@ -158,20 +157,20 @@ bot.hears(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, async (ctx) => {
     if (!ctx.from?.id) return;
     const userId = ctx.from.id;
 
-    if (!KeyPairData[userId]) return ctx.reply("Please /start first.");
-    
-    const tokenAddress = ctx.message!.text!;
-    currentUserToken[userId] = tokenAddress;
+    const userKeypair = await getUserKeypair(userId);
+    if (!userKeypair) return ctx.reply("Please /start first.");
 
-    const userPublicKey = KeyPairData[userId].publicKey;
-    const userBalance = await rpcConnection.getBalance(userPublicKey);
+    const tokenAddress = ctx.message!.text!;
+    await updateCurrentToken(userId, tokenAddress);
+
+    const userBalance = await rpcConnection.getBalance(userKeypair.publicKey);
 
     try {
         const response = await axios.get(`https://api.jup.ag/tokens/v2/search?query=${tokenAddress}`, {
             headers: { 'x-api-key': process.env.JUPITER_API }
         });
 
-        if(response.data.length === 0) return ctx.reply("Token not found on Jupiter.");
+        if (response.data.length === 0) return ctx.reply("Token not found on Jupiter.");
 
         const tokenData = response.data[0];
         const msg = `<b>${tokenData.symbol}</b>\nPrice: $${tokenData.usdPrice}\nMCap: $${tokenData.mcap}\n\nYour Balance: ${userBalance / 1e9} SOL`;
@@ -188,7 +187,9 @@ bot.hears(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, async (ctx) => {
 bot.on("message:text", async (ctx) => {
     if (!ctx.from?.id) return;
     const userId = ctx.from.id;
-    if (!KeyPairData[userId]) return;
+
+    const userKeypair = await getUserKeypair(userId);
+    if (!userKeypair) return;
 
     const text = ctx.message.text.trim();
     if (!/^\d+(\.\d+)?$/.test(text)) return;
@@ -197,40 +198,39 @@ bot.on("message:text", async (ctx) => {
     if (amount <= 0) return ctx.reply("Enter a valid amount.");
 
     if (ctx.session.step === "waiting_for_buy_amount") {
-        if (!currentUserToken[userId]) return ctx.reply("No token selected.");
-        
+        const currentToken = await getCurrentToken(userId);
+        if (!currentToken) return ctx.reply("No token selected.");
+
         const lamports = Math.round(amount * LAMPORTS_PER_SOL);
         await SolBuyHandler(ctx, lamports);
         ctx.session.step = "idle";
-    } 
-    
+    }
+
     else if (ctx.session.step === "waiting_for_sell_amount") {
-        const tokenMint = userCurrentSellToken[userId];
+        const tokenMint = await getCurrentSellToken(userId);
         if (!tokenMint) return ctx.reply("No token selected.");
 
-        const userKeypair = KeyPairData[userId];
-        
         try {
             // Get decimals to convert user input (e.g. 500) to raw units
             const tokenAccounts = await rpcConnection.getParsedTokenAccountsByOwner(userKeypair.publicKey, {
                 mint: new PublicKey(tokenMint)
             });
-            
+
             if (tokenAccounts.value.length === 0) return ctx.reply("You do not hold this token.");
 
             // @ts-ignore
             const tokenInfo = tokenAccounts.value[0].account.data.parsed.info.tokenAmount;
             const decimals = tokenInfo.decimals;
-            
+
             const rawAmount = BigInt(Math.round(amount * (10 ** decimals)));
 
             await ctx.reply(`Selling ${amount} tokens...`);
-            
+
             await executeJupiterSwap(
-                ctx, 
-                userKeypair, 
-                tokenMint, 
-                "So11111111111111111111111111111111111111112", 
+                ctx,
+                userKeypair,
+                tokenMint,
+                "So11111111111111111111111111111111111111112",
                 rawAmount.toString()
             );
         } catch (e) {
@@ -260,7 +260,7 @@ bot.callbackQuery("sellHandler", async (ctx) => {
     await ctx.answerCallbackQuery("Fetching Wallet...");
 
     const userId = ctx.from.id;
-    const userKeypair = KeyPairData[userId];
+    const userKeypair = await getUserKeypair(userId);
     if (!userKeypair) return ctx.reply("No wallet found.");
 
     // Fetch User's Tokens
@@ -305,9 +305,9 @@ bot.callbackQuery("sellHandler", async (ctx) => {
             console.error("DexScreener Error");
         }
     }
-    
+
     keyboard.row().text("Close", "closeHandler");
-    
+
     await ctx.reply(message, { parse_mode: "HTML", reply_markup: keyboard });
 });
 
@@ -315,9 +315,9 @@ bot.callbackQuery(/^sell_([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (ctx) => {
     if (!ctx.from?.id) return;
     const userId = ctx.from.id;
     const tokenMint = ctx.match[1]!;
-    
-    userCurrentSellToken[userId] = tokenMint;
-    
+
+    await updateCurrentSellToken(userId, tokenMint);
+
     await ctx.answerCallbackQuery();
     await ctx.reply(`Selected token: ${tokenMint}\nHow much do you want to sell?`, {
         reply_markup: tokenSellKeyboard
@@ -337,10 +337,12 @@ bot.callbackQuery("XSellHandler", async (ctx) => {
 bot.callbackQuery("refreshHandler", async (ctx) => {
     if (!ctx.from?.id) return;
     const userId = ctx.from.id;
-    if (!KeyPairData[userId]) return;
+
+    const userKeypair = await getUserKeypair(userId);
+    if (!userKeypair) return;
 
     await ctx.answerCallbackQuery("Refreshing...");
-    const balance = await rpcConnection.getBalance(KeyPairData[userId].publicKey);
+    const balance = await rpcConnection.getBalance(userKeypair.publicKey);
     await ctx.reply(`Current SOL Balance: ${balance / LAMPORTS_PER_SOL}`);
 });
 

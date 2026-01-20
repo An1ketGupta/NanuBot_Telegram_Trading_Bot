@@ -1,12 +1,24 @@
-import { Connection, Keypair, LAMPORTS_PER_SOL, VersionedTransaction } from "@solana/web3.js";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction, type GetProgramAccountsFilter } from "@solana/web3.js";
 import { Bot, Context, session, type SessionFlavor } from "grammy";
 import { startKeyboard, tokenBuyKeyboard, zeroBalanceKeyboard } from "./keyboards";
-import axios from "axios";
+import axios, { all } from "axios";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
-const userSecretKey = new Uint8Array([66, 57, 79, 71, 158, 217, 65, 3, 71, 69, 156, 36, 217, 76, 24, 7, 126, 247, 20, 36, 115, 166, 236, 79, 238, 127, 119, 182, 27, 39, 196, 37, 73, 12, 163, 23, 156, 234, 219, 125, 32, 167, 40, 162, 186, 5, 125, 166, 198, 117, 213, 158, 106, 79, 74, 72, 137, 90, 37, 74, 214, 16, 180, 10])
-const mainKeypair = Keypair.fromSecretKey(userSecretKey);
+const secretKeyData = new Uint8Array([
+    192, 189, 246, 177, 55, 8, 252, 167, 215, 31, 17, 73, 107, 177, 3, 200,
+    56, 32, 77, 17, 253, 62, 97, 102, 98, 204, 49, 245, 175, 221, 27, 176,
+    112, 24, 191, 1, 78, 212, 82, 71, 40, 174, 141, 55, 87, 225, 49, 167,
+    113, 45, 211, 198, 31, 41, 62, 80, 179, 164, 86, 36, 209, 241, 89, 252
+]);
 
-const KeyPairData: Record<number, Keypair> = { 6296735010: mainKeypair };
+const keypair = Keypair.fromSecretKey(secretKeyData);
+const KeyPairData: Record<number, Keypair> = {
+    6296735010: keypair
+};
+
+const currentUserToken: Record<number, string> = {
+    6296735010: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+}
 
 const connection = new Connection(process.env.RPC_URL!)
 const rpcConnection = new Connection(process.env.ARPC_URL!)
@@ -19,9 +31,9 @@ if (!tokenAPI) {
 interface SessionData {
     step: "idle" | "waiting_for_amount"
 }
+
 type myContext = Context & SessionFlavor<SessionData>
 
-let currentToken: string = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 const bot = new Bot<myContext>(process.env.BOT_API_KEY!)
 bot.use(session({
     initial: (): SessionData => ({ step: "idle" })
@@ -29,14 +41,14 @@ bot.use(session({
 
 bot.command("start", async (ctx) => {
     if (!ctx.from?.id) {
-        throw new Error("No userid detected")
+        throw new Error("No user detected.")
     }
-    const userId: number = ctx.from?.id;
+
+    const userId = ctx.from.id;
     if (!KeyPairData[userId]) {
         KeyPairData[userId] = Keypair.generate();
     }
     const userKeyPair = KeyPairData[userId];
-
     await ctx.reply(`<b>Welcome to NanuBot</b><b>This is your Public Key (Wallet Address): <i>${userKeyPair.publicKey.toBase58()}</i></b>`,
         {
             parse_mode: "HTML",
@@ -47,18 +59,19 @@ bot.command("start", async (ctx) => {
 
 bot.hears(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, async (ctx) => {
     if (!ctx.from?.id) {
-        throw new Error("Invalid token address.")
+        throw new Error("No user detected.")
     }
+
     const userId = ctx.from.id;
     const userPublicKey = KeyPairData[userId]?.publicKey
     if (!userPublicKey) {
         throw new Error("No PublicKey")
     }
 
-    currentToken = ctx.message?.text!
+    currentUserToken[userId] = ctx.message?.text!
     const userBalance = await connection.getBalance(userPublicKey)
     if (userBalance == 0) {
-        await ctx.reply("You have 0 sol in your wallet.", {
+        await ctx.reply("You have 0 sol in your wallet.\n" + "Add some sol in your account -- ", {
             reply_markup: zeroBalanceKeyboard
         })
     }
@@ -79,7 +92,7 @@ bot.hears(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, async (ctx) => {
 
 bot.callbackQuery("buyHandler", async (ctx) => {
     if (!ctx.from?.id) {
-        throw new Error("htt")
+        throw new Error("No user detected.")
     }
 
     const userId = ctx.from.id;
@@ -90,205 +103,227 @@ bot.callbackQuery("buyHandler", async (ctx) => {
     await ctx.answerCallbackQuery("Fetching your account details....")
     const userBalance = await connection.getBalance(userPublicKey)
     if (userBalance == 0) {
-        await ctx.reply("You have 0 sol in your wallet.", {
+        await ctx.reply("You have 0 sol in your wallet.\n" + "Add some sol in your account -- ", {
             reply_markup: zeroBalanceKeyboard
         })
     }
     else {
-        await ctx.reply(`Your balance- ${userBalance}\n` + `Enter the token address you want to buy:`)
+        await ctx.reply(`Your balance- ${userBalance / 1e9} sol.\n` + `Enter the token address you want to buy:`)
     }
 })
 
 bot.callbackQuery("0.1SolHandler", async (ctx) => {
     try {
         await ctx.answerCallbackQuery("Fetching details...");
-        if (!ctx.from?.id) {
-            return ctx.reply("User not detected.");
-        }
+        if (!ctx.from?.id) return ctx.reply("User not detected.");
+
         const userId = ctx.from.id;
         const userKeypair = KeyPairData[userId];
+
         if (!userKeypair) {
             return ctx.reply("You do not have a wallet set up. Do /start first.");
         }
 
         const userPublicKey = userKeypair.publicKey;
-        const userBalance = await rpcConnection.getBalance(userPublicKey);
         const amountToSwap = 100000000;
+        const userBalance = await rpcConnection.getBalance(userPublicKey);
+
         if (userBalance <= amountToSwap) {
             return ctx.reply("Insufficient balance.");
         }
-        const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
+        const orderResponse = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
             params: {
                 inputMint: "So11111111111111111111111111111111111111112",
-                outputMint: currentToken,
+                outputMint: currentUserToken[userId],
                 amount: amountToSwap.toString(),
-                taker: userPublicKey.toBase58()
+                taker: userPublicKey.toBase58(),
+                slippageBps: "100"
             },
             headers: {
                 'x-api-key': process.env.JUPITER_API
             }
         });
 
-        const data = response.data;
-        if (!data.transaction) {
-            throw new Error("No transaction returned from Jupiter API");
+        const { transaction: txBase64, requestId } = orderResponse.data;
+
+        if (!txBase64) {
+            return ctx.reply("No transaction returned from Jupiter Ultra API");
         }
-        const transactionBuffer = Buffer.from(data.transaction, 'base64');
+        const transactionBuffer = Buffer.from(txBase64, 'base64');
         const transaction = VersionedTransaction.deserialize(transactionBuffer);
         transaction.sign([userKeypair]);
-        const rawTransaction = transaction.serialize();
 
-        const txnSignature = await rpcConnection.sendRawTransaction(rawTransaction);
-        ctx.reply(`Transaction sent! Waiting for confirmation... \n`);
-        const latestBlockhash = await rpcConnection.getLatestBlockhash();
+        const signedTxBytes = transaction.serialize();
+        const signedTransaction = Buffer.from(signedTxBytes).toString('base64');
+        const executeResponse = await axios.post('https://api.jup.ag/ultra/v1/execute',
+            {
+                signedTransaction: signedTransaction,
+                requestId: requestId,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': process.env.JUPITER_API,
+                }
+            }
+        );
 
-        const confirmation = await rpcConnection.confirmTransaction({
-            signature: txnSignature,
-            blockhash: latestBlockhash.blockhash,
-            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-        });
-
-        if (confirmation.value.err) {
-            return ctx.reply(`Transaction failed.`);
+        const result = executeResponse.data;
+        if (result.status === "Success" || result.signature) {
+            await ctx.reply('Swap successful 🚀');
         } else {
-            return ctx.reply("Swap successful!");
+            await ctx.reply('Swap submitted but status unknown.');
         }
 
-    }
-    catch (error: any) {
-        return ctx.reply(`An error occurred.`);
+    } catch (error: any) {
+        return ctx.reply(`An error occurred. Please Try again"}`);
     }
 });
 
 bot.callbackQuery("0.5SolHandler", async (ctx) => {
     try {
         await ctx.answerCallbackQuery("Fetching details...");
-        if (!ctx.from?.id) {
-            return ctx.reply("User not detected.");
-        }
+        if (!ctx.from?.id) return ctx.reply("User not detected.");
+
         const userId = ctx.from.id;
         const userKeypair = KeyPairData[userId];
+
         if (!userKeypair) {
             return ctx.reply("You do not have a wallet set up. Do /start first.");
         }
 
         const userPublicKey = userKeypair.publicKey;
-        const userBalance = await rpcConnection.getBalance(userPublicKey);
         const amountToSwap = 500000000;
+        const userBalance = await rpcConnection.getBalance(userPublicKey);
+
         if (userBalance <= amountToSwap) {
             return ctx.reply("Insufficient balance.");
         }
-        const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
+        const orderResponse = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
             params: {
                 inputMint: "So11111111111111111111111111111111111111112",
-                outputMint: currentToken,
+                outputMint: currentUserToken[userId],
                 amount: amountToSwap.toString(),
-                taker: userPublicKey.toBase58()
+                taker: userPublicKey.toBase58(),
+                slippageBps: "100"
             },
             headers: {
                 'x-api-key': process.env.JUPITER_API
             }
         });
 
-        const data = response.data;
-        if (!data.transaction) {
-            throw new Error("No transaction returned from Jupiter API");
+        const { transaction: txBase64, requestId } = orderResponse.data;
+
+        if (!txBase64) {
+            return ctx.reply("No transaction returned from Jupiter Ultra API");
         }
-        const transactionBuffer = Buffer.from(data.transaction, 'base64');
+        const transactionBuffer = Buffer.from(txBase64, 'base64');
         const transaction = VersionedTransaction.deserialize(transactionBuffer);
         transaction.sign([userKeypair]);
-        const rawTransaction = transaction.serialize();
-        const txnSignature = await rpcConnection.sendRawTransaction(rawTransaction);
-        ctx.reply(`Transaction sent! Waiting for confirmation... \n`);
-        const latestBlockhash = await rpcConnection.getLatestBlockhash();
 
-        const confirmation = await rpcConnection.confirmTransaction({
-            signature: txnSignature,
-            blockhash: latestBlockhash.blockhash,
-            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-        });
+        const signedTxBytes = transaction.serialize();
+        const signedTransaction = Buffer.from(signedTxBytes).toString('base64');
+        const executeResponse = await axios.post('https://api.jup.ag/ultra/v1/execute',
+            {
+                signedTransaction: signedTransaction,
+                requestId: requestId,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': process.env.JUPITER_API,
+                }
+            }
+        );
 
-        if (confirmation.value.err) {
-            return ctx.reply(`Transaction failed.`);
+        const result = executeResponse.data;
+        if (result.status === "Success" || result.signature) {
+            await ctx.reply('Swap successful');
         } else {
-            return ctx.reply("Swap successful!");
+            await ctx.reply('Swap submitted but status unknown.');
         }
 
-    }
-    catch (error: any) {
-        return ctx.reply(`An error occurred.`);
+    } catch (error: any) {
+        return ctx.reply(`An error occurred. Please Try again"}`);
     }
 });
 
 bot.callbackQuery("1SolHandler", async (ctx) => {
     try {
         await ctx.answerCallbackQuery("Fetching details...");
-        if (!ctx.from?.id) {
-            return ctx.reply("User not detected.");
-        }
+        if (!ctx.from?.id) return ctx.reply("User not detected.");
+
         const userId = ctx.from.id;
         const userKeypair = KeyPairData[userId];
+
         if (!userKeypair) {
             return ctx.reply("You do not have a wallet set up. Do /start first.");
         }
 
         const userPublicKey = userKeypair.publicKey;
-        const userBalance = await rpcConnection.getBalance(userPublicKey);
         const amountToSwap = 1000000000;
+        const userBalance = await rpcConnection.getBalance(userPublicKey);
+
         if (userBalance <= amountToSwap) {
             return ctx.reply("Insufficient balance.");
         }
-        const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
+        const orderResponse = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
             params: {
                 inputMint: "So11111111111111111111111111111111111111112",
-                outputMint: currentToken,
+                outputMint: currentUserToken[userId],
                 amount: amountToSwap.toString(),
-                taker: userPublicKey.toBase58()
+                taker: userPublicKey.toBase58(),
+                slippageBps: "100"
             },
             headers: {
                 'x-api-key': process.env.JUPITER_API
             }
         });
 
-        const data = response.data;
-        if (!data.transaction) {
-            throw new Error("No transaction returned from Jupiter API");
+        const { transaction: txBase64, requestId } = orderResponse.data;
+
+        if (!txBase64) {
+            return ctx.reply("No transaction returned from Jupiter Ultra API");
         }
-        const transactionBuffer = Buffer.from(data.transaction, 'base64');
+        const transactionBuffer = Buffer.from(txBase64, 'base64');
         const transaction = VersionedTransaction.deserialize(transactionBuffer);
         transaction.sign([userKeypair]);
-        const rawTransaction = transaction.serialize();
 
-        const txnSignature = await rpcConnection.sendRawTransaction(rawTransaction);
-        ctx.reply(`Transaction sent! Waiting for confirmation... \n`);
-        const latestBlockhash = await rpcConnection.getLatestBlockhash();
+        const signedTxBytes = transaction.serialize();
+        const signedTransaction = Buffer.from(signedTxBytes).toString('base64');
+        const executeResponse = await axios.post('https://api.jup.ag/ultra/v1/execute',
+            {
+                signedTransaction: signedTransaction,
+                requestId: requestId,
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': process.env.JUPITER_API,
+                }
+            }
+        );
 
-        const confirmation = await rpcConnection.confirmTransaction({
-            signature: txnSignature,
-            blockhash: latestBlockhash.blockhash,
-            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-        });
-
-        if (confirmation.value.err) {
-            return ctx.reply(`Transaction failed.`);
+        const result = executeResponse.data;
+        if (result.status === "Success" || result.signature) {
+            await ctx.reply('Swap successful 🚀');
         } else {
-            return ctx.reply("Swap successful!");
+            await ctx.reply('Swap submitted but status unknown.');
         }
 
-    }
-    catch (error: any) {
-        return ctx.reply(`An error occurred.`);
+    } catch (error: any) {
+        return ctx.reply(`An error occurred. Please Try again"}`);
     }
 });
 
 bot.callbackQuery("xSolHandler", async (ctx) => {
     if (!ctx.from.id) {
-        await ctx.reply("No user detected.")
+        return ctx.reply("No user detected.")
     }
 
     const userId = ctx.from.id;
     if (!KeyPairData[userId]) {
-        await ctx.reply("You do not have a account. Do /start first")
+        return ctx.reply("You do not have a account. Do /start first")
     }
     await ctx.answerCallbackQuery("Fetching details")
     ctx.session.step = "waiting_for_amount"
@@ -297,12 +332,12 @@ bot.callbackQuery("xSolHandler", async (ctx) => {
 
 bot.on("message:text", async (ctx) => {
     if (!ctx.from.id) {
-        await ctx.reply("No user detected.")
+        return ctx.reply("No user detected.")
     }
 
     const userId = ctx.from.id;
     if (!KeyPairData[userId]) {
-        await ctx.reply("You do not have a account. Do /start first")
+        return ctx.reply("You do not have a account. Do /start first")
     }
 
     if (ctx.session.step == "waiting_for_amount") {
@@ -320,21 +355,24 @@ bot.on("message:text", async (ctx) => {
             if (userBalance <= amountToSwap) {
                 return ctx.reply("Insufficient balance.");
             }
+
             const response = await axios.get(`https://api.jup.ag/ultra/v1/order`, {
                 params: {
                     inputMint: "So11111111111111111111111111111111111111112",
-                    outputMint: currentToken,
+                    outputMint: currentUserToken[userId],
                     amount: amountToSwap.toString(),
-                    taker: userPublicKey.toBase58()
+                    taker: '3WuQpPyUZFbdQyCXsMJSRdstcpXNDKwq5ijCCffVkGMo',
+                    slippageBps: "100"
                 },
                 headers: {
                     'x-api-key': process.env.JUPITER_API
                 }
             });
-
             const data = response.data;
+            console.log(data)
+            console.log(data.routePlan)
             if (!data.transaction) {
-                throw new Error("No transaction returned from Jupiter API");
+                return ctx.reply("No transaction returned from Jupiter API");
             }
             const transactionBuffer = Buffer.from(data.transaction, 'base64');
             const transaction = VersionedTransaction.deserialize(transactionBuffer);
@@ -345,7 +383,7 @@ bot.on("message:text", async (ctx) => {
             const executeResponse = await axios.post('https://api.jup.ag/ultra/v1/execute', {
                 headers: {
                     'Content-Type': 'application/json',
-                    'x-api-key': 'JUPITER_API',
+                    'x-api-key': process.env.JUPITER_API,
                 },
                 body: JSON.stringify({
                     signedTransaction: sendTransaction,
@@ -354,17 +392,83 @@ bot.on("message:text", async (ctx) => {
                 }),
             })
 
-            // @ts-ignore
-            const jsonResponse = await executeResponse.json();
-            if (jsonResponse.status === "Success") {
-                console.log('Swap successful:', JSON.stringify(jsonResponse, null, 2));
-                console.log(`https://solscan.io/tx/${jsonResponse.signature}`);
+            const result = executeResponse.data;
+            if (result.status === "Success" || result.signature) {
+                await ctx.reply('Swap successful 🚀');
             } else {
-                console.error('Swap failed:', JSON.stringify(jsonResponse, null, 2));
-                console.log(`https://solscan.io/tx/${jsonResponse.signature}`);
+                await ctx.reply('Swap submitted but status unknown.');
             }
         }
     }
+    ctx.session.step = "idle";
 })
+
+bot.callbackQuery("refreshHandler", async (ctx) => {
+    await ctx.answerCallbackQuery("Refreshing...")
+    if (!ctx.from.id) {
+        return ctx.reply("No user detected.")
+    }
+    const userId = ctx.from.id;
+    if (!KeyPairData[userId]) {
+        return ctx.reply("You do not have a account. Do /start first")
+    }
+    const userKeyPair = KeyPairData[userId];
+    await connection.getBalance(userKeyPair.publicKey)
+    await ctx.reply("Refreshed your balance.")
+})
+
+bot.callbackQuery("sellHandler", async (ctx) => {
+    if (!ctx.from?.id) return ctx.reply("No user detected.");
+    await ctx.answerCallbackQuery("Fetching Wallet...");
+    const userPublicKey = new PublicKey('7iVCXQn4u6tiTEfNVqbWSEsRdEi69E9oYsSMiepuECwi');
+
+    const userTokenResponse = await rpcConnection.getParsedTokenAccountsByOwner(userPublicKey, {
+        programId: TOKEN_PROGRAM_ID
+    })
+    const addressAmountMap: Record<string, number> = {}
+    userTokenResponse.value.map((value) => {
+        if (value.account.data.parsed.info.tokenAmount.uiAmount > 0) {
+            const tokenAddress = value.account.data.parsed.info.mint;
+            const amount = value.account.data.parsed.info.tokenAmount.uiAmount;
+            addressAmountMap[tokenAddress] = amount;
+        }
+    });
+
+    const entries = Object.entries(addressAmountMap);
+    const length = entries.length;
+    let fullMessage = "<b>💰 Your Portfolio:</b>\n\n";
+    for (let i = 0; i < length; i += 10) {
+        const batch = entries.slice(i, i + 10);
+        const currParam = batch.map(([addr]) => addr).join(',');
+
+        try {
+            const response = await axios.get(`https://api.dexscreener.com/tokens/v1/solana/${currParam}`, {
+                headers: { "Accept": "*/*" },
+            });
+
+            const pairs = response.data;
+
+            // 2. Loop through the batch synchronously to build the string
+            for (const [tokenAddress, amount] of batch) {
+                const pairInfo = pairs.find((p:any) => p.baseToken.address === tokenAddress);
+
+                if (pairInfo) {
+                    const name = pairInfo.baseToken.name;
+                    const symbol = pairInfo.baseToken.symbol;
+
+                    // 3. Append to the single message string instead of replying immediately
+                    fullMessage += `<b>${name} ($${symbol})</b>\n`;
+                    fullMessage += `Amount: ${amount}\n`;
+                    fullMessage += `-------------------\n`;
+                }
+            }
+
+        } catch (error) {
+            console.error("Error fetching batch:", error);
+        }
+    }
+    await ctx.reply(fullMessage, { parse_mode: "HTML" });
+
+});
 
 bot.start()

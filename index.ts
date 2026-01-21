@@ -1,9 +1,9 @@
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { Bot, Context, InlineKeyboard, session, type SessionFlavor } from "grammy";
-
+import bs58 from "bs58";
 import axios from "axios";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { startKeyboard, tokenBuyKeyboard, tokenSellKeyboard } from "./keyboards";
+import { startKeyboard, tokenBuyKeyboard, tokenSellKeyboard, walletKeyboard } from "./keyboards";
 import {
     getOrCreateUser,
     getUserKeypair,
@@ -208,7 +208,6 @@ bot.on("message:text", async (ctx) => {
         if (!tokenMint) return ctx.reply("No token selected.");
 
         try {
-            // Get decimals to convert user input (e.g. 500) to raw units
             const tokenAccounts = await rpcConnection.getParsedTokenAccountsByOwner(userKeypair.publicKey, {
                 mint: new PublicKey(tokenMint)
             });
@@ -239,7 +238,9 @@ bot.on("message:text", async (ctx) => {
 
 bot.callbackQuery("buyHandler", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply("Please paste the Token Address (Contract) you want to buy.");
+    await ctx.reply(`Please paste the Token Address below:`,
+        { parse_mode: "Markdown" }
+    );
 });
 
 bot.callbackQuery("0.1SolHandler", (ctx) => SolBuyHandler(ctx, 100000000));
@@ -247,7 +248,7 @@ bot.callbackQuery("0.5SolHandler", (ctx) => SolBuyHandler(ctx, 500000000));
 bot.callbackQuery("1SolHandler", (ctx) => SolBuyHandler(ctx, 1000000000));
 
 bot.callbackQuery("xSolHandler", async (ctx) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery("Fetching details");
     ctx.session.step = "waiting_for_buy_amount";
     await ctx.reply("Enter the amount of SOL to spend:");
 });
@@ -260,7 +261,6 @@ bot.callbackQuery("sellHandler", async (ctx) => {
     const userKeypair = await getUserKeypair(userId);
     if (!userKeypair) return ctx.reply("No wallet found.");
 
-    // Fetch User's Tokens
     const userTokenResponse = await rpcConnection.getParsedTokenAccountsByOwner(userKeypair.publicKey, {
         programId: TOKEN_PROGRAM_ID
     });
@@ -316,9 +316,15 @@ bot.callbackQuery(/^sell_([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (ctx) => {
     await updateCurrentSellToken(userId, tokenMint);
 
     await ctx.answerCallbackQuery();
-    await ctx.reply(`Selected token: ${tokenMint}\nHow much do you want to sell?`, {
-        reply_markup: tokenSellKeyboard
-    });
+    await ctx.reply(
+        `Selected Token Contract:\n` +
+        `\`${tokenMint}\`\n\n` +
+        `👇 *Select an amount to sell:*`,
+        {
+            parse_mode: "MarkdownV2",
+            reply_markup: tokenSellKeyboard
+        }
+    );
 });
 
 bot.callbackQuery("25SellHandler", (ctx) => SellHandler(ctx, 0.25));
@@ -348,9 +354,9 @@ bot.callbackQuery("closeHandler", async (ctx) => {
     await ctx.deleteMessage();
 });
 
-bot.callbackQuery("fundHandler" ,async (ctx)=>{
+bot.callbackQuery("fundHandler", async (ctx) => {
     await ctx.answerCallbackQuery("Fetching details");
-    if(!ctx.from.id){
+    if (!ctx.from.id) {
         return ctx.reply("No user detected.")
     }
     const userId = ctx.from.id;
@@ -360,14 +366,58 @@ bot.callbackQuery("fundHandler" ,async (ctx)=>{
     await ctx.reply("Use moonpay to fund your wallet -- https://www.moonpay.com/buy/sol ")
 })
 
-bot.callbackQuery("walletHandler",async (ctx)=>{
-    await ctx.answerCallbackQuery("Fetching details");
-    if(!ctx.from.id){
-        return ctx.reply("No user detected.")
+bot.callbackQuery("walletHandler", async (ctx) => {
+    await ctx.answerCallbackQuery("Fetching wallet details...");
+    if (!ctx.from?.id) {
+        return ctx.reply("No user detected.");
     }
     const userId = ctx.from.id;
     const userKeypair = await getUserKeypair(userId);
-    if (!userKeypair) return;
+    if (!userKeypair) {
+        return ctx.reply("Do start first.");
+    }
+    try {
+        const userBalance = await rpcConnection.getBalance(userKeypair.publicKey);
+        const publicKeyStr = userKeypair.publicKey.toBase58();
+        const message =
+            `*TradeAni Wallet* \n\n` +
+            `*Address:*\n` +
+            `\`${publicKeyStr}\`\n\n` +
+            `*Balance:*\n` +
+            `${userBalance / 1e9} SOL`;
+
+        try {
+            await ctx.reply(message, {
+                parse_mode: "MarkdownV2",
+                reply_markup: walletKeyboard
+            });
+        } catch (e) {
+            await ctx.reply("Failed to fetch wallet details. Please try again.");
+        }
+    } catch (error) {
+        await ctx.reply("Failed to fetch wallet details. Please try again.");
+    }
+});
+
+bot.callbackQuery("secretKeyHandler", async (ctx) => {
+    await ctx.answerCallbackQuery("Getting your private key....")
+    if (!ctx.from.id) {
+        return ctx.reply("No user detected.")
+    }
+    const userId = ctx.from.id
+    const userKeyPair = await getUserKeypair(userId)
+    if (!userKeyPair) {
+        return ctx.reply("Please /start first.");
+    }
+
+    const userPrivateKey = bs58.encode(userKeyPair.secretKey)
+    await ctx.reply(
+        `⚠️ *PRIVATE KEY REVEALED* \n\n` +
+        `*Do not share this with anyone*\n\n` +
+        `👇 *Tap to copy:* \n` +
+        `||\`${userPrivateKey}\`||`,
+        { parse_mode: "MarkdownV2" }
+    );
 })
 
 bot.start();
